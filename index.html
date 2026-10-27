@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Site Emulator</title>
+<meta name="referrer" content="no-referrer">
 <style>
 :root{--bg:#eef0f4;--bar:#ffffff;--fg:#1c2230;--muted:#6b7385;--line:#d6dae3;--accent:#2f6bff;--tab:#e2e6ee}
 @media (prefers-color-scheme:dark){:root{--bg:#14171d;--bar:#1d212a;--fg:#e6e9f0;--muted:#8a92a5;--line:#2c323e;--accent:#6d97ff;--tab:#262b36;color-scheme:dark}}
@@ -33,6 +34,17 @@ iframe{position:absolute;inset:0;width:100%;height:100%;border:0;background:#fff
 .spin{width:28px;height:28px;border:3px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:s .8s linear infinite}
 @keyframes s{to{transform:rotate(360deg)}}
 .msg a{color:var(--accent)}
+.shield{position:relative}
+.shield.on{color:var(--accent)!important}
+.count{position:absolute;top:-2px;right:-4px;background:var(--accent);color:#fff;font-size:10px;line-height:1;padding:2px 4px;border-radius:8px;font-variant-numeric:tabular-nums}
+.panel{position:absolute;right:10px;top:4px;z-index:20;background:var(--bar);border:1px solid var(--line);border-radius:10px;padding:14px;width:min(300px,calc(100vw - 20px));display:flex;flex-direction:column;gap:12px;box-shadow:0 8px 30px rgba(0,0,0,.18)}
+.panel h3{margin:0;font-size:14px}
+.panel label{display:flex;gap:10px;align-items:flex-start;cursor:pointer}
+.panel label small{display:block;color:var(--muted)}
+.panel .wipe{border:1px solid var(--line);background:var(--bg);color:var(--fg);padding:8px;border-radius:8px;cursor:pointer;font:inherit}
+.panel .wipe:hover{border-color:var(--accent)}
+.panel p{margin:0;color:var(--muted);font-size:12px;line-height:1.45}
+.privtag{font-size:11px;color:var(--accent);border:1px solid var(--accent);border-radius:10px;padding:1px 8px;margin-left:6px;vertical-align:middle}
 </style>
 </head>
 <body>
@@ -43,8 +55,16 @@ iframe{position:absolute;inset:0;width:100%;height:100%;border:0;background:#fff
   <button id="reload" title="Reload">↻</button>
   <button id="homeBtn" title="Home">⌂</button>
   <form id="go"><input id="url" placeholder="Type a website or search" autocomplete="off"></form>
+  <button id="shieldBtn" class="shield on" title="Privacy">🛡<span class="count" id="count" hidden>0</span></button>
 </div>
 <main id="view"></main>
+<div class="panel" id="panel" hidden style="top:96px">
+  <h3>Privacy</h3>
+  <label><input type="checkbox" id="optTrackers" checked><span>Block trackers and ads<small>Strips Google Analytics, Facebook pixel, ad scripts and similar.</small></span></label>
+  <label><input type="checkbox" id="optScripts"><span>Block all site scripts<small>Most private. Pages load faster but some won't work.</small></span></label>
+  <button class="wipe" id="wipe">Close all tabs and wipe</button>
+  <p>Always on: no history saved, sites can't set cookies or store data, and sites aren't told where you came from. Your IP still shows, and the free proxies can see which pages you load.</p>
+</div>
 
 <script>
 // Free public proxies, tried in order until one works
@@ -104,6 +124,31 @@ async function fetchVia(url){
   }catch(e){throw new Error("All proxies failed")}
 }
 
+// ---- privacy ----
+const TRACKERS=/google-analytics|googletagmanager|doubleclick|googlesyndication|adservice\.google|connect\.facebook|facebook\.net|hotjar|clarity\.ms|segment\.(io|com)|mixpanel|amplitude|scorecardresearch|quantserve|taboola|outbrain|criteo|adnxs|amazon-adsystem|pubmatic|rubiconproject|tiktok\.com\/i18n\/pixel|analytics\.tiktok|bat\.bing|static\.ads-twitter|snap\.licdn|newrelic|nr-data|fullstory|chartbeat|cdn\.mxpnl/i;
+const INLINE_TRACK=/gtag\(|ga\(['"]create|fbq\(|_gaq|dataLayer\.push|googletag\.|_hmt|ttq\.|clarity\(/;
+const opt={trackers:true,scripts:false};
+let blocked=0;
+function scrub(html){
+  const doc=new DOMParser().parseFromString(html,"text/html");
+  let n=0;
+  doc.querySelectorAll("script").forEach(sc=>{
+    const src=sc.getAttribute("src")||"";
+    if(opt.scripts||(opt.trackers&&(TRACKERS.test(src)||(!src&&INLINE_TRACK.test(sc.textContent))))){sc.remove();n++;}
+  });
+  if(opt.trackers){
+    doc.querySelectorAll("iframe[src],img[src],link[href]").forEach(el=>{
+      const u=el.getAttribute("src")||el.getAttribute("href")||"";
+      if(TRACKERS.test(u)){el.remove();n++;}
+    });
+    doc.querySelectorAll("img").forEach(im=>{if(im.getAttribute("width")==="1"&&im.getAttribute("height")==="1"){im.remove();n++;}});
+  }
+  if(opt.scripts) doc.querySelectorAll("noscript").forEach(ns=>{const d=doc.createElement("div");d.innerHTML=ns.innerHTML;ns.replaceWith(d)});
+  blocked+=n; showCount();
+  return "<!doctype html>"+doc.documentElement.outerHTML;
+}
+function showCount(){const c=$("count");c.hidden=!blocked;c.textContent=blocked>999?"999+":blocked;}
+
 function newTab(url=""){tabs.push({hist:[],i:-1});cur=tabs.length-1;if(url)nav(url);else render();}
 function nav(raw){
   const u=norm(raw); if(!u) return;
@@ -121,7 +166,7 @@ async function render(){
   const t=tabs[cur], u=t.hist[t.i]||"", my=++loadId, v=$("view");
   $("url").value=u; drawTabs();
   if(!u){
-    v.innerHTML=`<div class="home"><h1>Site Emulator</h1><p>Type any website in the bar and it runs right here. For YouTube videos, use the <a href="tube.html" style="color:var(--accent)">Tube player</a>.</p><div class="quick">${QUICK.map(q=>`<button data-q="${q}">${q}</button>`).join("")}</div></div>`;
+    v.innerHTML=`<div class="home"><h1>Site Emulator <span class="privtag">Private</span></h1><p>Type any website in the bar and it runs right here. For YouTube videos, use the <a href="tube.html" style="color:var(--accent)">Tube player</a>.</p><div class="quick">${QUICK.map(q=>`<button data-q="${q}">${q}</button>`).join("")}</div></div>`;
     v.querySelectorAll("[data-q]").forEach(b=>b.onclick=()=>nav(b.dataset.q));
     return;
   }
@@ -132,10 +177,12 @@ async function render(){
     html=html.replace(/<meta[^>]+http-equiv=["']?content-security-policy[^>]*>/gi,"")
              .replace(/\sintegrity=["'][^"']*["']/gi,"")
              .replace(/<base[^>]*>/gi,"");
-    const tag=injected(u,idx);
+    html=scrub(html);
+    const tag=injected(u,idx)+'<meta name="referrer" content="no-referrer">';
     html=/<head[^>]*>/i.test(html)?html.replace(/<head[^>]*>/i,m=>m+tag):tag+html;
     const f=document.createElement("iframe");
-    f.sandbox="allow-scripts allow-forms allow-popups allow-modals";
+    f.sandbox="allow-scripts allow-forms allow-modals";
+    f.referrerPolicy="no-referrer";
     f.srcdoc=html; v.innerHTML=""; v.appendChild(f);
   }catch(e){
     if(my!==loadId) return;
@@ -161,6 +208,12 @@ $("back").onclick=()=>{const t=tabs[cur];if(t.i>0){t.i--;render();}};
 $("fwd").onclick=()=>{const t=tabs[cur];if(t.i<t.hist.length-1){t.i++;render();}};
 $("reload").onclick=()=>render();
 $("homeBtn").onclick=()=>{const t=tabs[cur];t.hist=t.hist.slice(0,t.i+1);t.hist.push("");t.i++;render();};
+$("shieldBtn").onclick=e=>{e.stopPropagation();$("panel").hidden=!$("panel").hidden;};
+document.addEventListener("click",e=>{if(!$("panel").contains(e.target)&&e.target!==$("shieldBtn"))$("panel").hidden=true;});
+$("optTrackers").onchange=e=>{opt.trackers=e.target.checked;render();};
+$("optScripts").onchange=e=>{opt.scripts=e.target.checked;render();};
+$("wipe").onclick=()=>{tabs=[];cur=0;blocked=0;showCount();$("url").value="";$("panel").hidden=true;
+  try{localStorage.clear();sessionStorage.clear()}catch(e){}newTab();};
 newTab();
 </script>
 </body>

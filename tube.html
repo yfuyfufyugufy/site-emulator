@@ -103,18 +103,45 @@ function showList(items,title){
   $("list").querySelectorAll(".vid").forEach(b=>b.onclick=()=>play(items[+b.dataset.i]));
 }
 
-async function fetchVia(url){
-  const tryOne=async idx=>{
-    const ctl=new AbortController();const tm=setTimeout(()=>ctl.abort(),20000);
-    try{
-      const r=await fetch(PROXIES[idx](url),{signal:ctl.signal});
-      if(!r.ok) throw 0;
-      const t=await r.text();
-      if(!t.includes('"videoRenderer"')) throw 0; // not a real results page
-      return t;
-    }finally{clearTimeout(tm)}
-  };
-  return Promise.any(PROXIES.map((_,i)=>tryOne(i)));
+// Fast JSON video-search servers (Piped + Invidious), raced against the page-scraping proxies
+const PIPED=["https://pipedapi.kavin.rocks","https://api.piped.yt","https://pipedapi.adminforge.de","https://pipedapi.leptons.xyz","https://pipedapi.ducks.party","https://pipedapi.reallyaweso.me"];
+const INV=["https://inv.nadeko.net","https://invidious.nerdvpn.de","https://yt.chocolatemoo53.com","https://invidious.tiekoetter.com"];
+const fmt=sec=>{sec=+sec;if(!sec||sec<0)return "";const h=Math.floor(sec/3600),m=Math.floor(sec%3600/60),x=String(sec%60).padStart(2,"0");return h?`${h}:${String(m).padStart(2,"0")}:${x}`:`${m}:${x}`};
+let winner=null; // whichever source answered fastest last time gets a head start
+try{winner=sessionStorage.getItem("tube-win")}catch(e){}
+
+function sources(q){
+  const enc=encodeURIComponent(q);
+  const list=[];
+  PIPED.forEach(b=>list.push({key:b,url:`${b}/search?q=${enc}&filter=videos`,read:async r=>{
+    const j=await r.json();return (j.items||[]).filter(v=>v.url&&v.url.includes("v=")).map(v=>({id:v.url.split("v=")[1].slice(0,11),title:v.title||"",channel:v.uploaderName||"",len:fmt(v.duration)}));}}));
+  INV.forEach(b=>list.push({key:b,url:`${b}/api/v1/search?q=${enc}&type=video`,read:async r=>{
+    const j=await r.json();return (Array.isArray(j)?j:[]).filter(v=>v.videoId).map(v=>({id:v.videoId,title:v.title||"",channel:v.author||"",len:fmt(v.lengthSeconds)}));}}));
+  const yt="https://www.youtube.com/results?search_query="+enc+"&hl=en&sp=EgIQAQ%253D%253D";
+  PROXIES.forEach((p,i)=>list.push({key:"proxy"+i,url:p(yt),read:async r=>{
+    const t=await r.text();if(!t.includes('"videoRenderer"'))throw 0;return parse(t);}}));
+  return list;
+}
+
+const cache=new Map(), pending=new Map();
+function fetchResults(q){
+  q=q.trim().toLowerCase();
+  if(cache.has(q)) return Promise.resolve(cache.get(q));
+  if(pending.has(q)) return pending.get(q);
+  const ctls=[];
+  const run=(src,delay)=>new Promise((res,rej)=>setTimeout(async()=>{
+    const ctl=new AbortController();ctls.push(ctl);const tm=setTimeout(()=>ctl.abort(),12000);
+    try{const r=await fetch(src.url,{signal:ctl.signal});if(!r.ok)throw 0;
+      const items=await src.read(r);if(!items.length)throw 0;res({items,key:src.key});}
+    catch(e){rej(e)}finally{clearTimeout(tm)}
+  },delay));
+  const p=Promise.any(sources(q).map(src=>run(src,!winner||src.key===winner?0:400)))
+    .then(({items,key})=>{
+      ctls.forEach(c=>c.abort()); // stop the slower ones
+      winner=key;try{sessionStorage.setItem("tube-win",key)}catch(e){}
+      cache.set(q,items);return items;})
+    .finally(()=>pending.delete(q));
+  pending.set(q,p);return p;
 }
 
 function parse(html){
@@ -133,16 +160,27 @@ function parse(html){
 }
 
 async function search(q){
-  $("listTitle").textContent=`Results for "${q}"`;
-  $("list").innerHTML=`<div class="msg"><div class="spin"></div>Searching…</div>`;
+  const title=`Results for "${q}"`;
+  $("listTitle").textContent=title;
+  const k=q.trim().toLowerCase();
+  if(!cache.has(k)) $("list").innerHTML=`<div class="msg"><div class="spin"></div>Searching…</div>`;
   try{
-    const html=await fetchVia("https://www.youtube.com/results?search_query="+encodeURIComponent(q)+"&hl=en");
-    showList(parse(html),`Results for "${q}"`);
+    const items=await fetchResults(q);
+    if($("listTitle").textContent===title) showList(items,title);
   }catch(e){
-    $("list").innerHTML=`<div class="msg">Search couldn't connect right now (the free proxies are busy).<br>Pasting a YouTube link still works.<button id="retry" style="border:1px solid var(--line);background:var(--card);color:var(--fg);padding:8px 16px;border-radius:18px;cursor:pointer;font:inherit">Try again</button></div>`;
+    $("list").innerHTML=`<div class="msg">Search couldn't connect right now (the free servers are busy).<br>Pasting a YouTube link still works.<button id="retry" style="border:1px solid var(--line);background:var(--card);color:var(--fg);padding:8px 16px;border-radius:18px;cursor:pointer;font:inherit">Try again</button></div>`;
     $("retry").onclick=()=>search(q);
   }
 }
+
+// Start searching while you type, so results are often ready when you press Enter
+let typeTimer;
+$("q").addEventListener("input",()=>{
+  clearTimeout(typeTimer);
+  const v=$("q").value.trim();
+  if(v.length<3||getId(v)) return;
+  typeTimer=setTimeout(()=>fetchResults(v).catch(()=>{}),450);
+});
 
 $("f").onsubmit=e=>{
   e.preventDefault();const s=$("q").value.trim();if(!s)return;

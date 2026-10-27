@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Site Emulator</title>
+<style>
+:root{--bg:#eef0f4;--bar:#ffffff;--fg:#1c2230;--muted:#6b7385;--line:#d6dae3;--accent:#2f6bff;--tab:#e2e6ee}
+@media (prefers-color-scheme:dark){:root{--bg:#14171d;--bar:#1d212a;--fg:#e6e9f0;--muted:#8a92a5;--line:#2c323e;--accent:#6d97ff;--tab:#262b36;color-scheme:dark}}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--fg);font:14px system-ui,sans-serif;display:flex;flex-direction:column}
+.tabs{display:flex;gap:4px;padding:8px 10px 0;overflow-x:auto}
+.tab{display:flex;align-items:center;gap:8px;max-width:200px;padding:7px 10px;border-radius:8px 8px 0 0;background:var(--tab);color:var(--muted);cursor:pointer;white-space:nowrap}
+.tab.on{background:var(--bar);color:var(--fg)}
+.tab span{overflow:hidden;text-overflow:ellipsis}
+.tab b{font-weight:400;opacity:.6}.tab b:hover{opacity:1}
+.newtab{background:none;border:0;color:var(--muted);font-size:18px;cursor:pointer;padding:0 8px}
+.bar{display:flex;gap:6px;align-items:center;background:var(--bar);padding:8px 10px;border-bottom:1px solid var(--line)}
+.bar button{background:none;border:0;color:var(--fg);font-size:16px;width:32px;height:32px;border-radius:6px;cursor:pointer}
+.bar button:hover{background:var(--tab)}
+form{flex:1;display:flex}
+#url{flex:1;min-width:0;border:1px solid var(--line);background:var(--bg);color:var(--fg);border-radius:18px;padding:8px 14px;font:inherit;outline:none}
+#url:focus{border-color:var(--accent)}
+main{flex:1;position:relative}
+iframe{position:absolute;inset:0;width:100%;height:100%;border:0;background:#fff}
+.home,.msg{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;padding:16px;text-align:center}
+.home h1{margin:0;font-size:28px}
+.home p,.msg p{margin:0;color:var(--muted);max-width:52ch}
+.quick{display:flex;flex-wrap:wrap;gap:8px;justify-content:center}
+.quick button,.msg button{border:1px solid var(--line);background:var(--bar);color:var(--fg);padding:8px 14px;border-radius:18px;cursor:pointer;font:inherit}
+.quick button:hover{border-color:var(--accent)}
+.spin{width:28px;height:28px;border:3px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:s .8s linear infinite}
+@keyframes s{to{transform:rotate(360deg)}}
+.msg a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="tabs" id="tabs"></div>
+<div class="bar">
+  <button id="back" title="Back">←</button>
+  <button id="fwd" title="Forward">→</button>
+  <button id="reload" title="Reload">↻</button>
+  <button id="homeBtn" title="Home">⌂</button>
+  <form id="go"><input id="url" placeholder="Type a website or search" autocomplete="off"></form>
+</div>
+<main id="view"></main>
+
+<script>
+// Free public proxies, tried in order until one works
+const PROXIES=[
+  u=>"https://api.allorigins.win/raw?url="+encodeURIComponent(u),
+  u=>"https://api.codetabs.com/v1/proxy?quest="+encodeURIComponent(u),
+  u=>"https://api.cors.lol/?url="+encodeURIComponent(u),
+  u=>"https://corsproxy.io/?url="+encodeURIComponent(u)
+];
+const QUICK=["google.com","wikipedia.org","github.com","youtube.com","thestack.quest","bing.com"];
+let tabs=[],cur=0,good=0,loadId=0;
+const $=id=>document.getElementById(id);
+
+function norm(s){
+  s=s.trim(); if(!s) return "";
+  if(/^https?:\/\//i.test(s)) return s;
+  if(/^[^\s]+\.[^\s]{2,}/.test(s)) return "https://"+s;
+  return "https://www.google.com/search?q="+encodeURIComponent(s);
+}
+
+// Script injected into each site: keeps clicks, forms and requests going through the proxy
+function injected(base,proxyIdx){
+  return `<base href="${base.replace(/"/g,"&quot;")}"><script>(function(){
+const PX=${PROXIES[proxyIdx].toString()};
+const abs=u=>{try{return new URL(u,document.baseURI).href}catch(e){return u}};
+const go=u=>parent.postMessage({emu:"go",url:abs(u)},"*");
+document.addEventListener("click",e=>{const a=e.target.closest&&e.target.closest("a[href]");if(!a)return;
+ const h=a.getAttribute("href");if(!h||h[0]==="#"||/^javascript:/i.test(h))return;e.preventDefault();go(a.href);},true);
+document.addEventListener("submit",e=>{e.preventDefault();const f=e.target;const u=new URL(abs(f.getAttribute("action")||location.href));
+ u.search=new URLSearchParams(new FormData(f)).toString();go(u.href);},true);
+const wrap=u=>{const a=abs(u);return /^https?:/.test(a)?PX(a):u};
+const of=window.fetch;window.fetch=(i,o)=>{try{i=typeof i==="string"?wrap(i):new Request(wrap(i.url),i)}catch(e){}return of(i,o)};
+const oo=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(m,u,...r){return oo.call(this,m,wrap(u),...r)};
+window.open=u=>{go(u);return null};
+history.pushState=history.replaceState=function(s,t,u){if(u)parent.postMessage({emu:"url",url:abs(u)},"*")};
+})()<\/script>`;
+}
+
+async function fetchVia(url){
+  // Ask every proxy at once; first one that returns a real page wins
+  const tryOne=async idx=>{
+    const ctl=new AbortController();const tm=setTimeout(()=>ctl.abort(),20000);
+    try{
+      const r=await fetch(PROXIES[idx](url),{signal:ctl.signal});
+      if(!r.ok) throw 0;
+      const t=await r.text();
+      if(!t||t.length<20) throw 0;
+      const head=t.slice(0,400);
+      if(/^\s*\{\s*"error"/.test(t)) throw 0;
+      if(/api key|rate limit|too many requests|quota exceeded|request timeout|timed out|oops\.\.\./i.test(head)&&t.length<3000) throw 0;
+      return {html:t,idx};
+    }finally{clearTimeout(tm)}
+  };
+  try{
+    const res=await Promise.any(PROXIES.map((_,i)=>tryOne(i)));
+    good=res.idx; return res;
+  }catch(e){throw new Error("All proxies failed")}
+}
+
+function newTab(url=""){tabs.push({hist:[],i:-1});cur=tabs.length-1;if(url)nav(url);else render();}
+function nav(raw){
+  const u=norm(raw); if(!u) return;
+  const t=tabs[cur]; t.hist=t.hist.slice(0,t.i+1); t.hist.push(u); t.i++; render();
+}
+function drawTabs(){
+  $("tabs").innerHTML=tabs.map((x,k)=>{
+    const h=x.hist[x.i]; let name="New tab";
+    if(h){try{name=new URL(h).hostname.replace(/^www\./,"")}catch{}}
+    return `<div class="tab ${k===cur?"on":""}" data-k="${k}"><span>${name}</span><b data-x="${k}">✕</b></div>`;
+  }).join("")+`<button class="newtab" id="nt" title="New tab">+</button>`;
+  $("nt").onclick=()=>newTab();
+}
+async function render(){
+  const t=tabs[cur], u=t.hist[t.i]||"", my=++loadId, v=$("view");
+  $("url").value=u; drawTabs();
+  if(!u){
+    v.innerHTML=`<div class="home"><h1>Site Emulator</h1><p>Type any website in the bar and it runs right here. For YouTube videos, use the <a href="tube.html" style="color:var(--accent)">Tube player</a>.</p><div class="quick">${QUICK.map(q=>`<button data-q="${q}">${q}</button>`).join("")}</div></div>`;
+    v.querySelectorAll("[data-q]").forEach(b=>b.onclick=()=>nav(b.dataset.q));
+    return;
+  }
+  v.innerHTML=`<div class="msg"><div class="spin"></div><p>Loading ${new URL(u).hostname}…</p></div>`;
+  try{
+    let {html,idx}=await fetchVia(u);
+    if(my!==loadId) return;
+    html=html.replace(/<meta[^>]+http-equiv=["']?content-security-policy[^>]*>/gi,"")
+             .replace(/\sintegrity=["'][^"']*["']/gi,"")
+             .replace(/<base[^>]*>/gi,"");
+    const tag=injected(u,idx);
+    html=/<head[^>]*>/i.test(html)?html.replace(/<head[^>]*>/i,m=>m+tag):tag+html;
+    const f=document.createElement("iframe");
+    f.sandbox="allow-scripts allow-forms allow-popups allow-modals";
+    f.srcdoc=html; v.innerHTML=""; v.appendChild(f);
+  }catch(e){
+    if(my!==loadId) return;
+    v.innerHTML=`<div class="msg"><p>Couldn't load ${new URL(u).hostname}. The free proxies might be busy.</p><button id="retry">Try again</button><p><a href="${u}" target="_blank" rel="noopener">Open it in a normal tab</a></p></div>`;
+    $("retry").onclick=render;
+  }
+}
+window.addEventListener("message",e=>{
+  if(!e.data) return;
+  if(e.data.emu==="go") nav(e.data.url);
+  if(e.data.emu==="url"){const t=tabs[cur];t.hist[t.i]=e.data.url;$("url").value=e.data.url;}
+});
+$("tabs").addEventListener("click",e=>{
+  if(e.target.dataset.x!==undefined){
+    const k=+e.target.dataset.x; tabs.splice(k,1);
+    if(!tabs.length) return newTab();
+    cur=Math.min(cur,tabs.length-1); return render();
+  }
+  const tab=e.target.closest(".tab"); if(tab){cur=+tab.dataset.k;render();}
+});
+$("go").onsubmit=e=>{e.preventDefault();nav($("url").value);$("url").blur();};
+$("back").onclick=()=>{const t=tabs[cur];if(t.i>0){t.i--;render();}};
+$("fwd").onclick=()=>{const t=tabs[cur];if(t.i<t.hist.length-1){t.i++;render();}};
+$("reload").onclick=()=>render();
+$("homeBtn").onclick=()=>{const t=tabs[cur];t.hist=t.hist.slice(0,t.i+1);t.hist.push("");t.i++;render();};
+newTab();
+</script>
+</body>
+</html>

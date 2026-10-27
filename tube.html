@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tube Player</title>
+<style>
+:root{--bg:#f4f4f6;--card:#ffffff;--fg:#17181c;--muted:#6a6d78;--line:#dcdde3;--accent:#e2262f}
+@media (prefers-color-scheme:dark){:root{--bg:#0f0f12;--card:#1b1c21;--fg:#eceef3;--muted:#8d909c;--line:#2a2c33;--accent:#ff4048;color-scheme:dark}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px system-ui,sans-serif}
+header{position:sticky;top:0;z-index:5;background:var(--bg);display:flex;gap:12px;align-items:center;padding:12px max(16px,env(safe-area-inset-right,0px)) 12px max(16px,env(safe-area-inset-left,0px));border-bottom:1px solid var(--line)}
+.logo{font-weight:800;font-size:18px;white-space:nowrap;cursor:pointer}
+.logo i{font-style:normal;color:#fff;background:var(--accent);border-radius:6px;padding:1px 7px;margin-right:4px}
+form{flex:1;display:flex;max-width:640px}
+#q{flex:1;min-width:0;border:1px solid var(--line);border-right:0;background:var(--card);color:var(--fg);border-radius:20px 0 0 20px;padding:9px 16px;font:inherit;outline:none}
+#q:focus{border-color:var(--accent)}
+form button{border:1px solid var(--line);background:var(--card);color:var(--fg);border-radius:0 20px 20px 0;padding:0 18px;cursor:pointer;font:inherit}
+main{padding:16px max(16px,env(safe-area-inset-right,0px)) 40px max(16px,env(safe-area-inset-left,0px));max-width:1200px;margin:0 auto;display:flex;flex-direction:column;gap:20px}
+.player{display:flex;flex-direction:column;gap:10px}
+.frame{position:relative;width:100%;max-width:100%;aspect-ratio:16/9;background:#000;border-radius:12px;overflow:hidden}
+.frame iframe{position:absolute;inset:0;width:100%;height:100%;border:0}
+.ptitle{font-size:18px;font-weight:650;margin:0;text-wrap:balance}
+.pmeta{display:flex;gap:14px;flex-wrap:wrap;color:var(--muted);align-items:center}
+.pmeta a{color:var(--accent);text-decoration:none}
+h2{margin:0;font-size:15px;color:var(--muted);font-weight:600;letter-spacing:.02em}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:16px}
+.vid{display:flex;flex-direction:column;gap:8px;cursor:pointer;background:none;border:0;padding:0;text-align:left;color:inherit;font:inherit}
+.thumb{position:relative;aspect-ratio:16/9;max-width:100%;border-radius:10px;overflow:hidden;background:var(--line)}
+.thumb img{width:100%;height:100%;object-fit:cover;display:block;transition:transform .2s}
+.vid:hover img{transform:scale(1.04)}
+.vid:focus-visible{outline:2px solid var(--accent);outline-offset:4px;border-radius:10px}
+.len{position:absolute;right:6px;bottom:6px;background:rgba(0,0,0,.8);color:#fff;font-size:12px;padding:1px 5px;border-radius:4px;font-variant-numeric:tabular-nums}
+.vt{font-weight:600;line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.vc{color:var(--muted);font-size:13px}
+.msg{color:var(--muted);text-align:center;padding:40px 0;display:flex;flex-direction:column;align-items:center;gap:12px}
+.spin{width:28px;height:28px;border:3px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:s .8s linear infinite}
+@keyframes s{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.spin{animation:none}.thumb img{transition:none}}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo" id="home"><i>▶</i>Tube</div>
+  <form id="f"><input id="q" placeholder="Search, or paste a YouTube link" autocomplete="off"><button>Go</button></form>
+  <a href="./" style="color:var(--muted);text-decoration:none;white-space:nowrap">Emulator</a>
+</header>
+<main>
+  <section class="player" id="player" hidden></section>
+  <section style="display:flex;flex-direction:column;gap:12px">
+    <h2 id="listTitle">Recently watched</h2>
+    <div id="list"></div>
+  </section>
+</main>
+
+<script>
+const PROXIES=[
+  u=>"https://api.allorigins.win/raw?url="+encodeURIComponent(u),
+  u=>"https://api.codetabs.com/v1/proxy?quest="+encodeURIComponent(u),
+  u=>"https://api.cors.lol/?url="+encodeURIComponent(u),
+  u=>"https://corsproxy.io/?url="+encodeURIComponent(u)
+];
+const $=id=>document.getElementById(id);
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+let recent=[];
+try{recent=JSON.parse(localStorage.getItem("tube-recent")||"[]")}catch(e){}
+const saveRecent=()=>{try{localStorage.setItem("tube-recent",JSON.stringify(recent.slice(0,24)))}catch(e){}};
+
+// Pull a video ID out of any YouTube link (or a bare ID)
+function getId(s){
+  s=s.trim();
+  if(/^[\w-]{11}$/.test(s)) return s;
+  const m=s.match(/(?:v=|youtu\.be\/|shorts\/|embed\/|live\/)([\w-]{11})/);
+  return m?m[1]:null;
+}
+
+function play(v){
+  const p=$("player");p.hidden=false;
+  p.innerHTML=`<div class="frame"><iframe src="https://www.youtube.com/embed/${v.id}?autoplay=1&rel=0"
+    allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen
+    referrerpolicy="strict-origin-when-cross-origin" title="${esc(v.title||"YouTube video")}"></iframe></div>
+    <p class="ptitle">${esc(v.title||"YouTube video")}</p>
+    <div class="pmeta">${v.channel?`<span>${esc(v.channel)}</span>`:""}
+    <a href="https://www.youtube.com/watch?v=${v.id}" target="_blank" rel="noopener">Won't play? Open on YouTube ↗</a></div>`;
+  recent=[v,...recent.filter(r=>r.id!==v.id)];saveRecent();
+  if($("listTitle").textContent==="Recently watched") showList(recent,"Recently watched");
+  window.scrollTo({top:0,behavior:"smooth"});
+}
+
+function showList(items,title){
+  $("listTitle").textContent=title;
+  if(!items.length){
+    $("list").innerHTML=`<div class="msg">${title==="Recently watched"?"Nothing yet. Search for something or paste a YouTube link.":"No videos found. Try different words."}</div>`;
+    return;
+  }
+  $("list").innerHTML=`<div class="grid">${items.map((v,i)=>`
+    <button class="vid" data-i="${i}">
+      <div class="thumb"><img loading="lazy" alt="" src="https://i.ytimg.com/vi/${v.id}/mqdefault.jpg">${v.len?`<span class="len">${esc(v.len)}</span>`:""}</div>
+      <div class="vt">${esc(v.title||"YouTube video")}</div>
+      ${v.channel?`<div class="vc">${esc(v.channel)}</div>`:""}
+    </button>`).join("")}</div>`;
+  $("list").querySelectorAll(".vid").forEach(b=>b.onclick=()=>play(items[+b.dataset.i]));
+}
+
+async function fetchVia(url){
+  const tryOne=async idx=>{
+    const ctl=new AbortController();const tm=setTimeout(()=>ctl.abort(),20000);
+    try{
+      const r=await fetch(PROXIES[idx](url),{signal:ctl.signal});
+      if(!r.ok) throw 0;
+      const t=await r.text();
+      if(!t.includes('"videoRenderer"')) throw 0; // not a real results page
+      return t;
+    }finally{clearTimeout(tm)}
+  };
+  return Promise.any(PROXIES.map((_,i)=>tryOne(i)));
+}
+
+function parse(html){
+  const out=[],seen=new Set();
+  const re=/"videoRenderer":\{"videoId":"([\w-]{11})"/g;let m;
+  while((m=re.exec(html))&&out.length<30){
+    const id=m[1];if(seen.has(id))continue;seen.add(id);
+    const chunk=html.slice(m.index,m.index+6000);
+    const dec=s=>{try{return JSON.parse('"'+s+'"')}catch(e){return s}};
+    const t=chunk.match(/"title":\{"runs":\[\{"text":"((?:[^"\\]|\\.)*)"/);
+    const c=chunk.match(/"ownerText":\{"runs":\[\{"text":"((?:[^"\\]|\\.)*)"/);
+    const l=chunk.match(/"lengthText":\{[\s\S]{0,400}?"simpleText":"([^"]+)"/);
+    out.push({id,title:t?dec(t[1]):"",channel:c?dec(c[1]):"",len:l?l[1]:""});
+  }
+  return out;
+}
+
+async function search(q){
+  $("listTitle").textContent=`Results for "${q}"`;
+  $("list").innerHTML=`<div class="msg"><div class="spin"></div>Searching…</div>`;
+  try{
+    const html=await fetchVia("https://www.youtube.com/results?search_query="+encodeURIComponent(q)+"&hl=en");
+    showList(parse(html),`Results for "${q}"`);
+  }catch(e){
+    $("list").innerHTML=`<div class="msg">Search couldn't connect right now (the free proxies are busy).<br>Pasting a YouTube link still works.<button id="retry" style="border:1px solid var(--line);background:var(--card);color:var(--fg);padding:8px 16px;border-radius:18px;cursor:pointer;font:inherit">Try again</button></div>`;
+    $("retry").onclick=()=>search(q);
+  }
+}
+
+$("f").onsubmit=e=>{
+  e.preventDefault();const s=$("q").value.trim();if(!s)return;
+  const id=getId(s);
+  if(id){play({id,title:"",channel:""});$("q").value="";}
+  else search(s);
+};
+$("home").onclick=()=>{$("player").hidden=true;$("player").innerHTML="";showList(recent,"Recently watched");};
+showList(recent,"Recently watched");
+</script>
+</body>
+</html>

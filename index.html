@@ -162,13 +162,30 @@ function drawTabs(){
   }).join("")+`<button class="newtab" id="nt" title="New tab">+</button>`;
   $("nt").onclick=()=>newTab();
 }
+// YouTube doesn't work through proxies, so send it to the Tube player instead
+function tubeFor(u){
+  let x;try{x=new URL(u)}catch(e){return null}
+  const h=x.hostname.replace(/^(www\.|m\.|music\.)/,"");
+  if(h!=="youtube.com"&&h!=="youtu.be"&&h!=="youtube-nocookie.com") return null;
+  const id=h==="youtu.be"?x.pathname.slice(1,12):(x.searchParams.get("v")||(x.pathname.match(/\/(?:shorts|embed|live)\/([\w-]{11})/)||[])[1]);
+  if(id) return "tube.html?v="+encodeURIComponent(id);
+  const q=x.searchParams.get("search_query");
+  if(q) return "tube.html?q="+encodeURIComponent(q);
+  return "tube.html";
+}
 async function render(){
   const t=tabs[cur], u=t.hist[t.i]||"", my=++loadId, v=$("view");
   $("url").value=u; drawTabs();
   if(!u){
-    v.innerHTML=`<div class="home"><h1>Site Emulator <span class="privtag">Private</span></h1><p>Type any website in the bar and it runs right here. For YouTube videos, use the <a href="tube.html" style="color:var(--accent)">Tube player</a>.</p><div class="quick">${QUICK.map(q=>`<button data-q="${q}">${q}</button>`).join("")}</div></div>`;
+    v.innerHTML=`<div class="home"><h1>Site Emulator <span class="privtag">Private</span></h1><p>Type any website in the bar and it runs right here. YouTube opens in the Tube player.</p><div class="quick">${QUICK.map(q=>`<button data-q="${q}">${q}</button>`).join("")}</div></div>`;
     v.querySelectorAll("[data-q]").forEach(b=>b.onclick=()=>nav(b.dataset.q));
     return;
+  }
+  const tube=tubeFor(u);
+  if(tube){
+    const f=document.createElement("iframe");
+    f.src=tube;f.allow="autoplay; encrypted-media; picture-in-picture; fullscreen";f.allowFullscreen=true;
+    v.innerHTML="";v.appendChild(f);return;
   }
   v.innerHTML=`<div class="msg"><div class="spin"></div><p>Loading ${new URL(u).hostname}…</p></div>`;
   try{

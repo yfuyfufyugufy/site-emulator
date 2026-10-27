@@ -189,7 +189,13 @@ $("f").onsubmit=e=>{
   else search(s);
 };
 $("home").onclick=()=>{$("player").hidden=true;$("player").innerHTML="";showList(recent,"Recently watched");};
+// Open straight to a video or search from the link (?v=ID or ?q=words)
+const params=new URLSearchParams(location.search);
 showList(recent,"Recently watched");
+if(params.get("v")&&getId(params.get("v"))) play({id:getId(params.get("v")),title:"",channel:""});
+else if(params.get("q")){$("q").value=params.get("q");search(params.get("q"));}
+// Inside the emulator, the "Emulator" link isn't needed
+if(window.top!==window.self){const a=document.querySelector('header a[href="./"]');if(a)a.hidden=true;}
 </script>
 </body>
 </html>
